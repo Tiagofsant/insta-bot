@@ -104,6 +104,10 @@
   }
 
   const ICON = {
+    shield: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/></svg>',
+    shieldOn: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/></svg>',
+    store: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v10h16V10M3 4h18l-1 6H4z"/></svg>',
+    person: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
     check: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     x: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     lock: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
@@ -160,6 +164,7 @@
         is_verified: rnd() < 0.04,
         is_private: r < 0.62 && rnd() < 0.35,
         profile_pic_url: '',
+        _isBusiness: r >= 0.62,
         _followsBack: isMeme ? rnd() < 0.05 : r < 0.62 ? rnd() < 0.7 : rnd() < 0.25,
       });
     }
@@ -268,6 +273,14 @@
           await igFetch('https://www.instagram.com/api/v1/web/friendships/' + pk + '/unfollow/', opts);
         }
       },
+
+      // dados públicos do perfil: diz se é conta comercial (empresa/marca) e a categoria
+      async profileType(username) {
+        const data = await igFetch('https://www.instagram.com/api/v1/users/web_profile_info/?username=' + encodeURIComponent(username));
+        const u = (data.data && data.data.user) || {};
+        const category = u.business_category_name || u.category_name || u.overall_category_name || '';
+        return { kind: u.is_business_account ? 'pagina' : 'pessoa', category };
+      },
     };
   }
 
@@ -283,10 +296,18 @@
           out.push(...src.slice(i, i + 50));
           onProgress(out.length);
         }
-        return out.map(({ _followsBack, ...u }) => u);
+        return out.map(({ _followsBack, _isBusiness, ...u }) => u);
       },
       async unfollow() {
         await sleep(450);
+      },
+      async profileType(username) {
+        await sleep(250);
+        const u = all.find((x) => x.username === username);
+        if (!u) throw new IgError('Perfil não encontrado.', 'other');
+        return u._isBusiness
+          ? { kind: 'pagina', category: u.username.startsWith('memes') || u.username.match(/^(receitas|viagens|frases|fitness|humor|dicas|promo|sorteios|motivacao)/) ? 'Entretenimento' : 'Empresa local' }
+          : { kind: 'pessoa', category: '' };
       },
       seed: all,
     };
@@ -309,6 +330,8 @@
     daily: 'iguf_daily_' + myId,
     cfg: 'iguf_cfg' + (DEMO ? '_demo' : ''),
     view: 'iguf_view' + (DEMO ? '_demo' : ''),
+    vault: 'iguf_vault_' + myId,
+    kinds: 'iguf_kinds_' + myId,
   };
 
   const PRESETS = {
@@ -333,6 +356,9 @@
     lastClicked: null,
     renderLimit: 0,
     visible: [],
+    vault: new Map(store.get(K.vault, []).map((v) => [String(v.pk), Object.assign({}, v, { pk: String(v.pk) })])),
+    kinds: store.get(K.kinds, {}), // pk -> { kind, category, source: 'perfil' | 'voce' }
+    checking: null, // { total, done }
   };
 
   function setUsers(list) {
@@ -341,9 +367,10 @@
   }
   setUsers(store.get(K.users, []));
 
-  if (DEMO && state.users.length === 0) {
+  const demoFresh = DEMO && state.users.length === 0;
+  if (demoFresh) {
     // a demonstração já abre com a lista carregada e alguns marcados
-    setUsers(api.seed.map(({ _followsBack, ...u }) => u));
+    setUsers(api.seed.map(({ _followsBack, _isBusiness, ...u }) => u));
     state.followers = new Set(api.seed.filter((u) => u._followsBack).map((u) => u.pk));
     state.followersLoaded = true;
     api.seed.filter((u) => !u._followsBack).slice(0, 6).forEach((u) => state.selected.add(u.pk));
@@ -367,7 +394,85 @@
   const saveCfg = () => store.set(K.cfg, state.cfg);
   const saveView = () => store.set(K.view, state.view);
   const isDone = (u) => state.done.has(u.pk);
-  const queue = () => state.users.filter((u) => state.selected.has(u.pk) && !isDone(u));
+  const lower = (s) => String(s || '').toLowerCase();
+  let vaultNames = new Set();
+  const inVault = (u) => state.vault.has(u.pk) || vaultNames.has(lower(u.username));
+  const queue = () => state.users.filter((u) => state.selected.has(u.pk) && !isDone(u) && !inVault(u));
+  function saveVault() {
+    vaultNames = new Set([...state.vault.values()].map((v) => lower(v.username)));
+    store.set(K.vault, [...state.vault.values()]);
+  }
+  // entradas importadas antes de carregar a lista ganham o id real quando a conta aparece
+  function reconcileVault() {
+    const byName = new Map(state.users.map((u) => [lower(u.username), u]));
+    for (const [pk, v] of [...state.vault]) {
+      const live = byName.get(lower(v.username));
+      if (live && live.pk !== pk) {
+        state.vault.delete(pk);
+        state.vault.set(live.pk, Object.assign({}, v, { pk: live.pk }));
+      }
+    }
+    saveVault();
+  }
+  const saveKinds = () => store.set(K.kinds, state.kinds);
+
+  // ---------- pessoa ou página? ----------
+  // Primeiro um palpite pelo @ e pelo nome; "Conferir tipo" pergunta ao Instagram se a conta é comercial;
+  // e um clique na etiqueta deixa você corrigir na mão. A correção manual sempre vence.
+  const norm = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const PAGE_WORDS = new Set(('loja store shop oficial official studio estudio cafe cafeteria restaurante bar pizzaria padaria ' +
+    'burger hamburgueria lanchonete doceria confeitaria sorveteria acai academia fitness crossfit clinica odonto odontologia ' +
+    'estetica salao barbearia beauty makeup moda fashion boutique imoveis imobiliaria corretora news noticias jornal tv radio ' +
+    'revista magazine blog memes meme humor frases receitas dicas promo promocoes sorteio sorteios oficina atelie brecho ' +
+    'livraria editora pet petshop floricultura delivery tattoo fotografia photography eventos buffet turismo viagens hotel ' +
+    'pousada igreja ministerio escola curso cursos colegio universidade faculdade banco seguros marketing agencia digital games ' +
+    'futebol clube club banda music musica records festival prefeitura governo shopping mercado supermercado farmacia ong ' +
+    'instituto fundacao company ltda grupo group brand marca app motivacao entretenimento podcast canal distribuidora ' +
+    'atacado varejo moveis decor decoracao arquitetura engenharia advocacia advogados contabilidade consultoria horta ' +
+    'hortifruti feira sitio fazenda vinhos cervejaria brewery kitchen food foods sushi churrascaria acougue emporio').split(' '));
+  const PAGE_SUFFIX = /(oficial|official|store|shop|loja|_br|\.br|brasil|news|tv|fm|hq|club|app)$/;
+  const FIRST_NAMES = new Set(('ana bruno carla diego elisa felipe gabriela gabriel henrique isabela isabel joao jose larissa marcos ' +
+    'natalia otavio paula paulo rafael rafaela sofia thiago tiago vitoria victor vitor lucas camila pedro juliana mateus matheus ' +
+    'beatriz gustavo leticia andre renata caio maria marcela mariana fernanda fernando carlos eduardo eduarda luiz luis luiza ' +
+    'luisa julia amanda bruna daniel daniela rodrigo ricardo roberto patricia aline alice laura leonardo leo gabi vinicius ' +
+    'guilherme igor joana jessica jessica karina kelly lais livia lorena manuela miguel murilo nathalia nicolas pamela priscila ' +
+    'raquel sabrina samuel sara sarah talita tatiana valeria vanessa yasmin arthur heitor davi bernardo enzo antonio francisco ' +
+    'helena valentina cecilia clara isadora lara melissa debora denise sandra simone silvia sergio marcelo marcio mauricio ' +
+    'alexandre alex anderson adriana adriano alan alessandra barbara bianca carolina caroline cristina cristiane diana diogo ' +
+    'erika fabio fabiana flavia flavio giovana giovanna helio hugo ingrid ivan jean jorge julio kaique lucia luciana marina ' +
+    'milena monica nina otto renan renato rita rosa sofia tais thais thomas tomas vera wagner wesley william yuri').split(' '));
+
+  function guessKind(u) {
+    const uname = norm(u.username);
+    const name = norm(u.full_name);
+    const tokens = new Set([...uname.split(/[._\d]+/), ...name.split(/[^a-z0-9]+/)].filter(Boolean));
+    for (const t of tokens) if (PAGE_WORDS.has(t)) return 'pagina';
+    if (PAGE_SUFFIX.test(uname)) return 'pagina';
+    if (/[®™|•@]|\b(ltda|me|eireli|s\.a)\b/i.test(u.full_name || '')) return 'pagina';
+    const words = name.split(/\s+/).filter(Boolean);
+    if (words.length && FIRST_NAMES.has(words[0])) return 'pessoa';
+    for (const t of tokens) if (FIRST_NAMES.has(t)) return 'pessoa';
+    if (words.length >= 2 && words.length <= 4) return 'pessoa';
+    return '?';
+  }
+
+  const guessCache = new Map();
+  function classify(u) {
+    const k = state.kinds[u.pk];
+    if (k) return k;
+    let g = guessCache.get(u.pk);
+    if (!g) guessCache.set(u.pk, (g = { kind: guessKind(u), category: '', source: 'palpite' }));
+    return g;
+  }
+
+  reconcileVault();
+  if (demoFresh) {
+    // a demonstração abre com três pessoas já guardadas no cofre
+    for (const u of state.users.filter((x) => x.full_name && !/\d/.test(x.username) && classify(x).kind === 'pessoa' && !state.selected.has(x.pk)).slice(0, 3)) {
+      state.vault.set(u.pk, { pk: u.pk, username: u.username, full_name: u.full_name, added: today() });
+    }
+    saveVault();
+  }
 
   // ---------- estilo ----------
   const fontLink = document.createElement('link');
@@ -381,7 +486,7 @@
   .app{
     --bg:#EEF0F5; --surface:#FFFFFF; --raised:#F7F8FB; --ink:#14161C; --muted:#646B7B; --line:#DADEE8;
     --accent:#2F45D8; --accent-ink:#FFFFFF; --accent-soft:#E4E8FD;
-    --cut:#D93A32; --cut-ink:#FFFFFF; --cut-soft:#FCE9E7; --ok:#1C7F4E; --ok-soft:#E2F3EA; --warn:#9A5B00; --warn-soft:#FBF0DC;
+    --cut:#D93A32; --cut-ink:#FFFFFF; --cut-soft:#FCE9E7; --ok:#1C7F4E; --ok-soft:#E2F3EA; --page:#7A3FB8; --page-soft:#F1E8FB; --warn:#9A5B00; --warn-soft:#FBF0DC;
     --shadow:0 1px 2px rgba(20,22,28,.06),0 6px 20px rgba(20,22,28,.06);
     --display:"Bricolage Grotesque",ui-rounded,"Segoe UI",system-ui,sans-serif;
     --body:"Instrument Sans",-apple-system,"Segoe UI",Roboto,system-ui,sans-serif;
@@ -391,7 +496,7 @@
   .app.dark{
     --bg:#0D0F14; --surface:#161921; --raised:#1C2029; --ink:#ECEEF4; --muted:#9299A9; --line:#2A2F3B;
     --accent:#8394FF; --accent-ink:#0D0F14; --accent-soft:#232A4D;
-    --cut:#FF6A60; --cut-ink:#1A0B0A; --cut-soft:#3A1E1D; --ok:#53C892; --ok-soft:#173226; --warn:#F0B451; --warn-soft:#352914;
+    --cut:#FF6A60; --cut-ink:#1A0B0A; --cut-soft:#3A1E1D; --ok:#53C892; --ok-soft:#173226; --page:#C8A2F5; --page-soft:#2E2140; --warn:#F0B451; --warn-soft:#352914;
     --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
     color-scheme:dark;
   }
@@ -548,6 +653,29 @@
   .fab{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:2147483647;border:0;border-radius:999px;padding:10px 16px;
     background:#2F45D8;color:#fff;font:600 14px var(--body);box-shadow:0 6px 20px rgba(0,0,0,.25);cursor:pointer}
 
+  .vaultbtn svg{color:var(--ok)}
+  .vaultpin{position:absolute;top:6px;right:36px;width:28px;height:28px;border-radius:8px;border:0;background:none;display:grid;place-items:center;color:var(--muted);opacity:0;transition:opacity .12s}
+  .card:hover .vaultpin,.vaultpin:focus-visible{opacity:1}
+  .vaultpin:hover{background:var(--ok-soft);color:var(--ok)}
+  .card.safe{border-color:var(--ok);background:var(--ok-soft);cursor:default}
+  .card.safe .vaultpin{opacity:1;color:var(--ok)}
+  .card.safe .mark{display:none}
+  .tag.safe svg{width:11px;height:11px}
+  button.tag{cursor:pointer;font-family:inherit}
+  .tag.kind.ps{color:var(--ink)}
+  .tag.kind.pg{background:var(--page-soft);color:var(--page);border-color:transparent}
+  .tag.kind.uk{border-style:dashed}
+  .tag.kind.guess{opacity:.85}
+  .tag.kind:hover{border-color:var(--muted)}
+  .note.safe{background:var(--ok-soft);color:var(--ok);display:flex;gap:6px;align-items:center}
+  .modal.wide{width:min(620px,100%)}
+  .modal .vt{display:flex;gap:8px;align-items:center}
+  .modal .vt svg{color:var(--ok);width:20px;height:20px}
+  .vsearch{width:100%;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--raised)}
+  .vlist{max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:2px;border:1px solid var(--line);border-radius:12px;padding:6px}
+  .vlist a{color:inherit;font-weight:600;text-decoration:none}
+  .vlist a:hover{text-decoration:underline}
+  .vlist:empty{display:none}
   @media (max-width:980px){
     .app{overflow:auto}
     .body{display:flex;flex-direction:column;flex:none}
@@ -621,6 +749,7 @@
       h('div', { class: 'actions' },
         el.loadBtn,
         el.followersBtn,
+        el.vaultBtn = h('button', { class: 'btn vaultbtn', html: ICON.shield, onclick: openVault }),
         h('button', { class: 'btn', onclick: openPaste }, 'Marcar por lista'),
         h('button', { class: 'btn', onclick: exportCsv }, 'Exportar CSV'),
         h('button', { class: 'btn icon ghost', title: 'Ritmo e limites', 'aria-label': 'Ritmo e limites', html: ICON.gear, onclick: openSettings }),
@@ -681,9 +810,13 @@
     { key: 'all', label: 'Todos', test: (u) => !isDone(u) },
     { key: 'notback', label: 'Não te seguem', needsFollowers: true, test: (u) => !isDone(u) && !state.followers.has(u.pk) },
     { key: 'back', label: 'Te seguem', needsFollowers: true, test: (u) => !isDone(u) && state.followers.has(u.pk) },
+    { key: 'people', label: 'Pessoas', test: (u) => !isDone(u) && classify(u).kind === 'pessoa' },
+    { key: 'pages', label: 'Páginas', test: (u) => !isDone(u) && classify(u).kind === 'pagina' },
+    { key: 'unknown', label: 'Sem certeza', test: (u) => !isDone(u) && classify(u).kind === '?' },
+    { key: 'vault', label: 'No cofre', test: (u) => !isDone(u) && inVault(u) },
     { key: 'verified', label: 'Verificados', test: (u) => !isDone(u) && u.is_verified },
     { key: 'private', label: 'Privados', test: (u) => !isDone(u) && u.is_private },
-    { key: 'selected', label: 'Marcados', test: (u) => !isDone(u) && state.selected.has(u.pk) },
+    { key: 'selected', label: 'Marcados', test: (u) => !isDone(u) && state.selected.has(u.pk) && !inVault(u) },
     { key: 'done', label: 'Removidos', test: (u) => isDone(u) },
   ];
   const currentFilter = () => FILTERS.find((f) => f.key === state.view.filter) || FILTERS[0];
@@ -724,13 +857,19 @@
     el.bulk.textContent = '';
     const list = state.visible;
     if (!list.length || state.view.filter === 'done') return;
-    const unmarked = list.filter((u) => !state.selected.has(u.pk)).length;
-    const marked = list.length - unmarked;
+    const free = list.filter((u) => !inVault(u));
+    const unmarked = free.filter((u) => !state.selected.has(u.pk)).length;
+    const marked = free.length - unmarked;
+    const outVault = free.length;
+    const unchecked = list.filter((u) => !state.kinds[u.pk]).length;
     el.bulk.append(
       h('span', null, list.length.toLocaleString('pt-BR') + (list.length === 1 ? ' conta aqui' : ' contas aqui')),
-      h('button', { class: 'btn', disabled: !unmarked || null, onclick: () => bulk(list, true) }, 'Marcar todas (' + unmarked + ')'),
-      h('button', { class: 'btn ghost', disabled: !marked || null, onclick: () => bulk(list, false) }, 'Desmarcar (' + marked + ')'),
-      h('span', null, 'Dica: Shift + clique marca um intervalo.')
+      h('button', { class: 'btn', disabled: !unmarked || null, onclick: () => bulk(free, true) }, 'Marcar todas (' + unmarked + ')'),
+      h('button', { class: 'btn ghost', disabled: !marked || null, onclick: () => bulk(free, false) }, 'Desmarcar (' + marked + ')'),
+      h('button', { class: 'btn vaultbtn', html: ICON.shield, disabled: !outVault || null, onclick: () => vaultAdd(free) }, 'Guardar no cofre (' + outVault + ')'),
+      state.checking
+        ? h('button', { class: 'btn ghost', onclick: () => (state.checking.stop = true) }, 'Parar conferência (' + state.checking.done + '/' + state.checking.total + ')')
+        : h('button', { class: 'btn ghost', disabled: !unchecked || !!state.run || null, title: 'Pergunta ao Instagram se cada conta é comercial. Uma consulta a cada poucos segundos.', onclick: () => checkKinds(list) }, 'Conferir tipo (' + unchecked + ')')
     );
   }
 
@@ -748,18 +887,35 @@
         ? h('span', { class: 'tag ok' }, 'te segue')
         : h('span', { class: 'tag no' }, 'não te segue'));
     }
+    const k = classify(u);
+    const kindLabel = k.kind === 'pagina' ? (k.category ? k.category : 'página') : k.kind === 'pessoa' ? 'pessoa' : 'pessoa ou página?';
+    tags.unshift(h('button', {
+      class: 'tag kind ' + (k.kind === 'pagina' ? 'pg' : k.kind === 'pessoa' ? 'ps' : 'uk') + (k.source === 'palpite' ? ' guess' : ''),
+      'data-kind': '1',
+      html: k.kind === 'pagina' ? ICON.store : k.kind === 'pessoa' ? ICON.person : '',
+      title: (k.source === 'palpite' ? 'Palpite pelo nome. ' : k.source === 'perfil' ? 'Conferido no perfil. ' : 'Você definiu. ') + 'Clique para trocar.',
+    }, kindLabel));
     if (u.is_verified) tags.push(h('span', { class: 'tag v', html: ICON.badge }, 'verificado'));
     if (u.is_private) tags.push(h('span', { class: 'tag', html: ICON.lock }, 'privado'));
+    const vault = inVault(u);
+    if (vault && !done) tags.unshift(h('span', { class: 'tag ok safe', html: ICON.shieldOn }, 'no cofre'));
     const c = h('div', {
-      class: 'card' + (sel ? ' sel' : '') + (done ? ' done' : '') + (state.run && state.run.current === pk ? ' now' : ''),
+      class: 'card' + (sel && !vault ? ' sel' : '') + (vault ? ' safe' : '') + (done ? ' done' : '') + (state.run && state.run.current === pk ? ' now' : ''),
       role: done ? null : 'checkbox',
       'aria-checked': done ? null : String(sel),
       tabindex: done ? null : '0',
       'data-pk': pk,
       'data-idx': idx,
-      title: done ? null : sel ? 'Clique para manter' : 'Clique para remover',
+      title: done ? null : vault ? 'Protegida pelo cofre' : sel ? 'Clique para manter' : 'Clique para remover',
     },
       done ? null : h('span', { class: 'mark', html: ICON.check }),
+      done ? null : h('button', {
+        class: 'vaultpin',
+        'data-vault': '1',
+        html: vault ? ICON.shieldOn : ICON.shield,
+        title: vault ? 'No cofre: protegida contra remoção. Clique para tirar.' : 'Guardar no cofre',
+        'aria-label': (vault ? 'Tirar @' : 'Guardar @') + u.username + (vault ? ' do cofre' : ' no cofre'),
+      }),
       h('a', {
         class: 'open',
         href: 'https://www.instagram.com/' + encodeURIComponent(u.username) + '/',
@@ -866,6 +1022,7 @@
   function setSel(pk, on) {
     const u = state.byPk.get(pk);
     if (!u || isDone(u)) return;
+    if (on && inVault(u)) return;
     if (on) state.selected.add(pk);
     else state.selected.delete(pk);
     const c = cardEls.get(pk);
@@ -901,6 +1058,25 @@
     const c = e.target.closest('.card');
     if (!c || c.classList.contains('done')) return;
     const pk = c.dataset.pk;
+    if (e.target.closest('[data-vault]')) {
+      const u = state.byPk.get(pk);
+      if (inVault(u)) vaultRemove([u]);
+      else vaultAdd([u]);
+      return;
+    }
+    if (e.target.closest('[data-kind]')) {
+      const u = state.byPk.get(pk);
+      const cur = classify(u).kind;
+      state.kinds[pk] = { kind: cur === 'pessoa' ? 'pagina' : 'pessoa', category: '', source: 'voce' };
+      saveKinds();
+      refreshCard(u);
+      afterSelection();
+      return;
+    }
+    if (state.vault.has(pk)) {
+      log('@' + state.byPk.get(pk).username + ' está no cofre. Tire do cofre (escudo no cartão) para poder remover.', 'warn');
+      return;
+    }
     const idx = Number(c.dataset.idx);
     const on = !state.selected.has(pk);
     if (e.shiftKey && state.lastClicked != null) {
@@ -915,7 +1091,7 @@
   el.grid.addEventListener('keydown', (e) => {
     if (e.key !== ' ' && e.key !== 'Enter') return;
     const c = e.target.closest('.card');
-    if (!c || e.target.closest('a')) return;
+    if (!c || e.target.closest('a') || e.target.closest('button')) return;
     e.preventDefault();
     c.click();
   });
@@ -932,7 +1108,11 @@
       h('div', { class: 'stat' },
         h('div', { class: 'lbl' }, 'Seguindo'),
         h('div', { class: 'num' }, active.length.toLocaleString('pt-BR')),
-        h('div', { class: 'sub' }, state.done.size ? state.done.size + ' já removidas' : state.users.length ? 'contas na sua lista' : 'lista ainda não carregada')
+        h('div', { class: 'sub' }, state.users.length
+          ? active.filter((u) => classify(u).kind === 'pessoa').length.toLocaleString('pt-BR') + ' pessoas · ' +
+            active.filter((u) => classify(u).kind === 'pagina').length.toLocaleString('pt-BR') + ' páginas · ' +
+            state.vault.size + ' no cofre'
+          : 'lista ainda não carregada')
       ),
       h('div', { class: 'stat' },
         h('div', { class: 'lbl' }, 'Não te seguem'),
@@ -952,6 +1132,7 @@
         h('div', { class: 'meter' }, h('i', { style: 'width:' + pct + '%' }))
       )
     );
+    el.vaultBtn.lastChild.nodeType === 3 ? (el.vaultBtn.lastChild.textContent = 'Cofre (' + state.vault.size + ')') : el.vaultBtn.append('Cofre (' + state.vault.size + ')');
     el.loadBtn.textContent = state.loading && state.loading.kind === 'following'
       ? 'Carregando… ' + state.loading.count
       : state.users.length ? 'Atualizar lista' : 'Carregar quem eu sigo';
@@ -1104,6 +1285,7 @@
           now < q.length
             ? 'Hoje saem ' + now + ' (seu limite diário). As outras ' + (q.length - now) + ' ficam na fila para os próximos dias.'
             : 'Vai levar ' + estimate(q.length).replace('≈ ', 'cerca de ') + '.'),
+        state.vault.size ? h('div', { class: 'note safe' }, h('span', { html: ICON.shieldOn }), ' As ' + state.vault.size + ' contas do cofre ficam de fora, mesmo que estejam marcadas.') : null,
         state.cfg.dryRun
           ? h('div', { class: 'note warn' }, 'Modo teste ligado: nada será desfeito de verdade.')
           : h('div', { class: 'note' }, 'Deixe esta aba aberta. Você pode pausar quando quiser e continuar depois.'),
@@ -1239,6 +1421,7 @@
       if (kind === 'following') {
         setUsers(users);
         store.set(K.users, state.users);
+        reconcileVault();
         log('Você segue ' + users.length + ' contas.', 'ok');
       } else {
         state.followers = new Set(users.map((u) => u.pk));
@@ -1279,7 +1462,7 @@
     try {
       for (const u of q) {
         if (state.stopRequested) break;
-        if (!state.selected.has(u.pk) || isDone(u)) continue; // desmarcada durante a rodada
+        if (!state.selected.has(u.pk) || isDone(u) || inVault(u)) continue; // desmarcada ou guardada no cofre durante a rodada
         if (daily().count >= c.dailyLimit) {
           log('Limite de ' + c.dailyLimit + ' por dia atingido. O resto fica na fila para amanhã.', 'warn');
           break;
@@ -1356,6 +1539,198 @@
     renderQueue();
   }
 
+  function saveFile(name, text, type) {
+    const blob = new Blob([text], { type });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  // ---------- cofre ----------
+  function refreshCard(u) {
+    const old = cardEls.get(u.pk);
+    if (old) old.replaceWith(card(u, Number(old.dataset.idx)));
+  }
+
+  function vaultAdd(list) {
+    let n = 0;
+    for (const u of list) {
+      if (!u || state.vault.has(u.pk)) continue;
+      state.vault.set(u.pk, { pk: u.pk, username: u.username, full_name: u.full_name || '', added: today() });
+      state.selected.delete(u.pk);
+      refreshCard(u);
+      n++;
+    }
+    saveVault();
+    afterSelection();
+    log(n === 1 ? '@' + list[0].username + ' guardada no cofre.' : n + ' contas guardadas no cofre.', 'ok');
+  }
+
+  function vaultRemove(list) {
+    for (const u of list) {
+      for (const [pk, v] of [...state.vault]) if (pk === u.pk || lower(v.username) === lower(u.username)) state.vault.delete(pk);
+      const live = state.byPk.get(u.pk);
+      if (live) refreshCard(live);
+    }
+    saveVault();
+    afterSelection();
+    log(list.length === 1 ? '@' + list[0].username + ' saiu do cofre.' : list.length + ' contas saíram do cofre.');
+  }
+
+  function vaultJson() {
+    return JSON.stringify({ tipo: 'insta-unfollow-cofre', versao: 1, salvo_em: new Date().toISOString(), contas: [...state.vault.values()] }, null, 2);
+  }
+
+  function importVault(text) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      // aceita também uma lista simples de @, um por linha
+      data = { contas: text.split(/[\s,;]+/).filter(Boolean).map((t) => ({ username: t.replace(/^@/, '').replace(/.*instagram\.com\/([^/?#]+).*/i, '$1') })) };
+    }
+    const contas = Array.isArray(data) ? data : data.contas || [];
+    const byName = new Map(state.users.map((u) => [u.username.toLowerCase(), u]));
+    let n = 0;
+    for (const c of contas) {
+      if (!c || !c.username) continue;
+      const live = byName.get(String(c.username).toLowerCase());
+      const pk = live ? live.pk : String(c.pk || 'u:' + c.username.toLowerCase());
+      if (state.vault.has(pk)) continue;
+      state.vault.set(pk, { pk, username: live ? live.username : c.username, full_name: (live && live.full_name) || c.full_name || '', added: c.added || today() });
+      state.selected.delete(pk);
+      n++;
+    }
+    saveVault();
+    renderGrid();
+    afterSelection();
+    log(n + ' contas adicionadas ao cofre pelo arquivo.', 'ok');
+    return n;
+  }
+
+  function openVault() {
+    const search = h('input', { id: 'iguf-vault-search', type: 'search', placeholder: 'Buscar no cofre', autocomplete: 'off', class: 'vsearch' });
+    const listBox = h('div', { class: 'vlist' });
+    const info = h('p', null, '');
+    const file = h('input', { id: 'iguf-vault-file', type: 'file', accept: '.json,.txt,application/json,text/plain', hidden: true });
+    const people = state.users.filter((u) => !isDone(u) && !inVault(u) && classify(u).kind === 'pessoa');
+
+    function paint() {
+      const q = norm(search.value.trim().replace(/^@/, ''));
+      const items = [...state.vault.values()]
+        .filter((v) => !q || norm(v.username).includes(q) || norm(v.full_name).includes(q))
+        .sort((a, b) => a.username.localeCompare(b.username));
+      info.textContent = state.vault.size
+        ? state.vault.size + (state.vault.size === 1 ? ' conta protegida.' : ' contas protegidas.') + ' Elas nunca entram na fila de remoção, mesmo se você marcar todas.'
+        : 'O cofre está vazio. Guarde aqui quem você não quer perder: clique no escudo de um cartão, use "Guardar no cofre" num filtro, ou o botão abaixo.';
+      listBox.textContent = '';
+      for (const v of items.slice(0, 400)) {
+        const live = state.byPk.get(v.pk);
+        listBox.appendChild(
+          h('div', { class: 'qitem' },
+            avatar(live || v),
+            h('div', { class: 'who' },
+              h('div', null, h('a', { href: 'https://www.instagram.com/' + encodeURIComponent(v.username) + '/', target: '_blank', rel: 'noopener' }, '@' + v.username)),
+              h('div', { class: 's' }, (v.full_name || '') + (live || !state.users.length ? '' : (v.full_name ? ' · ' : '') + 'você não segue mais'))
+            ),
+            h('button', { 'aria-label': 'Tirar @' + v.username + ' do cofre', title: 'Tirar do cofre', html: ICON.x, onclick: () => { vaultRemove([v]); paint(); } })
+          )
+        );
+      }
+      if (items.length > 400) listBox.appendChild(h('div', { class: 'qempty' }, '+ ' + (items.length - 400) + ' contas. Use a busca.'));
+    }
+    search.addEventListener('input', paint);
+    file.addEventListener('change', () => {
+      const f = file.files && file.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        importVault(String(r.result || ''));
+        paint();
+      };
+      r.readAsText(f);
+    });
+    paint();
+    openModal(
+      h('div', { class: 'modal wide' },
+        h('h3', { class: 'vt', html: ICON.shieldOn }, 'Cofre'),
+        info,
+        people.length
+          ? h('button', { class: 'btn vaultbtn', html: ICON.shield, onclick: () => { vaultAdd(people); paint(); } },
+              'Guardar todas as ' + people.length + ' contas que parecem pessoas')
+          : null,
+        search,
+        listBox,
+        h('div', { class: 'note' }, 'O cofre fica salvo neste navegador. Baixe uma cópia para não perder se limpar os dados do navegador ou trocar de computador.'),
+        h('div', { class: 'foot' },
+          file,
+          h('button', { class: 'btn', onclick: () => file.click() }, 'Importar cópia'),
+          h('button', {
+            class: 'btn',
+            disabled: !state.vault.size || null,
+            onclick: () => {
+              const text = [...state.vault.values()].map((v) => '@' + v.username).join('\n');
+              (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+                .then(() => log('Lista do cofre copiada (' + state.vault.size + ' @).', 'ok'))
+                .catch(() => log('Não consegui copiar. Use "Baixar cópia".', 'warn'));
+            },
+          }, 'Copiar @'),
+          h('button', {
+            class: 'btn primary',
+            disabled: !state.vault.size || null,
+            onclick: () => {
+              if (DEMO) return log('Na versão de verdade, este botão baixa o arquivo do cofre (.json).', 'warn');
+              saveFile('cofre-instagram-' + today() + '.json', vaultJson(), 'application/json');
+              log('Cópia do cofre baixada.', 'ok');
+            },
+          }, 'Baixar cópia'),
+          h('button', { class: 'btn', onclick: closeModal }, 'Fechar')
+        )
+      )
+    );
+  }
+
+  // ---------- conferir tipo no perfil ----------
+  async function checkKinds(list) {
+    if (state.checking || state.run) return;
+    const todo = list.filter((u) => !state.kinds[u.pk]);
+    if (!todo.length) return;
+    state.checking = { total: todo.length, done: 0, stop: false };
+    log('Conferindo o tipo de ' + todo.length + ' contas no Instagram, uma a cada poucos segundos…');
+    renderBulk();
+    try {
+      for (const u of todo) {
+        if (state.checking.stop) break;
+        try {
+          const r = await api.profileType(u.username);
+          state.kinds[u.pk] = { kind: r.kind, category: r.category || '', source: 'perfil' };
+          saveKinds();
+          refreshCard(u);
+        } catch (e) {
+          if (e.kind === 'rate' || e.kind === 'blocked' || e.kind === 'auth') {
+            log(e.message + ' Parei a conferência. Tente de novo mais tarde.', 'err');
+            break;
+          }
+          log('Não consegui conferir @' + u.username + ' (' + e.message + ').', 'warn');
+        }
+        state.checking.done++;
+        renderBulk();
+        await sleep(DEMO ? 150 : rand(2500, 5000) + (state.checking.done % 25 === 0 ? rand(20000, 40000) : 0));
+      }
+    } finally {
+      const done = state.checking.done;
+      state.checking = null;
+      log('Conferência terminada: ' + done + ' contas.', 'ok');
+      renderStats();
+      renderChips();
+      renderBulk();
+    }
+  }
+
   function exportCsv() {
     if (!state.users.length) {
       log('Carregue a lista antes de exportar.', 'warn');
@@ -1366,11 +1741,14 @@
       return;
     }
     const esc = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-    const lines = [['usuario', 'nome', 'te_segue', 'verificado', 'privado', 'marcado', 'removido', 'link'].join(',')];
+    const lines = [['usuario', 'nome', 'tipo', 'categoria', 'no_cofre', 'te_segue', 'verificado', 'privado', 'marcado', 'removido', 'link'].join(',')];
     for (const u of state.users) {
       lines.push([
         esc(u.username),
         esc(u.full_name),
+        { pessoa: 'pessoa', pagina: 'pagina', '?': 'incerto' }[classify(u).kind],
+        esc(classify(u).category),
+        inVault(u) ? 'sim' : 'nao',
         state.followersLoaded ? (state.followers.has(u.pk) ? 'sim' : 'nao') : '',
         u.is_verified ? 'sim' : 'nao',
         u.is_private ? 'sim' : 'nao',
@@ -1379,14 +1757,7 @@
         'https://www.instagram.com/' + u.username + '/',
       ].join(','));
     }
-    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'instagram-seguindo-' + today() + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    saveFile('instagram-seguindo-' + today() + '.csv', '\ufeff' + lines.join('\n'), 'text/csv;charset=utf-8');
     log('Planilha exportada (' + state.users.length + ' contas).', 'ok');
   }
 
