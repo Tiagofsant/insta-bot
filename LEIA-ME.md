@@ -43,6 +43,7 @@ O cofre guarda as contas que você quer manter. Conta no cofre **nunca entra na 
 - Clique no **escudo** no canto de um cartão para guardar ou tirar do cofre. O cartão fica verde.
 - **Guardar no cofre** guarda todas as contas do filtro atual (por exemplo, filtre **Pessoas** e guarde todas de uma vez).
 - O botão **Cofre** no topo mostra a lista, com link para cada perfil. Contas que você deixou de seguir por outro caminho continuam lá, marcadas como "você não segue mais", para você poder seguir de novo.
+- Para **tirar do cofre** várias de uma vez: num filtro (ex.: **No cofre** com uma busca, ou **Páginas**) use **Tirar do cofre**; dentro do botão **Cofre**, busque e use **Tirar estas contas do cofre**, ou **Esvaziar cofre** (pede um segundo clique para confirmar). Uma por uma: o escudo no cartão ou o × na lista.
 - **Baixe uma cópia** (arquivo .json) de vez em quando. O cofre fica salvo no navegador, e limpar os dados do navegador ou trocar de computador apaga essa memória. **Importar cópia** traz o cofre de volta. Também aceita um .txt com um @ por linha.
 
 Um jeito de "excluir todo mundo e manter só os amigos": filtro **Pessoas** → confira a lista → **Guardar no cofre** → filtro **Todos** → **Marcar todas** → **Começar a remover**.
