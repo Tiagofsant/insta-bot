@@ -21,11 +21,31 @@ Interface em tela cheia que abre por cima do Instagram, no navegador do computad
    - **Marcar todas** marca tudo o que está no filtro ou na busca atual;
    - **Marcar por lista** aceita vários @ ou links de perfil colados;
    - o ícone no canto do cartão abre o perfil em outra aba, para conferir.
-8. Confira a **Fila de remoção** à direita (o × tira alguém da fila) e clique em **Começar a remover**. Deixe a aba aberta. O círculo mostra a contagem até a próxima, e **Pausar** para quando quiser.
+8. Guarde no **cofre** quem você não quer perder (veja abaixo).
+9. Confira a **Fila de remoção** à direita (o × tira alguém da fila) e clique em **Começar a remover**. Deixe a aba aberta. O círculo mostra a contagem até a próxima, e **Pausar** para quando quiser.
 
 Para testar sem remover ninguém, ligue **Modo teste** na engrenagem (Ritmo e limites). O botão `–` esconde a tela; o botão azul no canto traz de volta. Se recarregar a página, é só colar o script de novo: a seleção continua lá.
 
-**Exportar CSV** baixa uma planilha com todas as contas que você segue, dizendo quem te segue de volta, quem está marcado e quem já foi removido.
+**Exportar CSV** baixa uma planilha com todas as contas que você segue, dizendo se é pessoa ou página, se está no cofre, quem te segue de volta, quem está marcado e quem já foi removido.
+
+## Pessoas ou páginas
+
+Cada cartão tem uma etiqueta **pessoa** ou **página** (empresas, marcas, lojas, perfis de memes, notícias etc.). Os filtros **Pessoas**, **Páginas** e **Sem certeza** separam as duas coisas.
+
+- A etiqueta começa como um **palpite** pelo @ e pelo nome (por exemplo "loja", "oficial", "cafe", "_br", ou um nome de pessoa como "Ana Souza"). O palpite erra às vezes.
+- **Conferir tipo** pergunta ao Instagram, conta por conta, se o perfil é uma conta comercial, e mostra a categoria (ex.: "Loja de roupas"). Faz uma consulta a cada 3 a 5 segundos, então 300 contas levam uns 20 minutos. Use num filtro (ex.: "Sem certeza" ou "Pessoas") em vez de todas de uma vez. Criadores de conteúdo que não são conta comercial aparecem como pessoa.
+- Clique na etiqueta para corrigir na mão. A sua correção sempre vence.
+
+## Cofre
+
+O cofre guarda as contas que você quer manter. Conta no cofre **nunca entra na fila de remoção**, nem quando você usa "Marcar todas" para tirar todo mundo.
+
+- Clique no **escudo** no canto de um cartão para guardar ou tirar do cofre. O cartão fica verde.
+- **Guardar no cofre** guarda todas as contas do filtro atual (por exemplo, filtre **Pessoas** e guarde todas de uma vez).
+- O botão **Cofre** no topo mostra a lista, com link para cada perfil. Contas que você deixou de seguir por outro caminho continuam lá, marcadas como "você não segue mais", para você poder seguir de novo.
+- **Baixe uma cópia** (arquivo .json) de vez em quando. O cofre fica salvo no navegador, e limpar os dados do navegador ou trocar de computador apaga essa memória. **Importar cópia** traz o cofre de volta. Também aceita um .txt com um @ por linha.
+
+Um jeito de "excluir todo mundo e manter só os amigos": filtro **Pessoas** → confira a lista → **Guardar no cofre** → filtro **Todos** → **Marcar todas** → **Começar a remover**.
 
 ## Ritmo
 
@@ -48,6 +68,8 @@ No ritmo normal, 150 contas levam umas 3 horas. Se você tem 1.000 para remover,
 - Nunca cole no console códigos de outras pessoas que você não entende. Este é curto e legível. Ele só conversa com instagram.com.
 
 ## Problemas comuns
+
+- **"Erro 404" em todos os unfollows**: era a rota antiga, que o Instagram desligou em outubro de 2026. A versão atual usa o mesmo pedido do botão do site. Cole o script novo e clique em **Atualizar lista** antes de remover.
 
 - **"Não encontrei sua sessão"**: você não está logado nessa aba, ou abriu outro site. Entre em instagram.com e tente de novo.
 - **"Sessão expirada"**: recarregue a página, faça login, cole o script de novo.
