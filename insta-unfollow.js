@@ -805,6 +805,7 @@
   .vlist a{color:inherit;font-weight:600;text-decoration:none}
   .vlist a:hover{text-decoration:underline}
   .vlist:empty{display:none}
+  .dangerish{color:var(--cut)}
   @media (max-width:980px){
     .app{overflow:auto}
     .body{display:flex;flex-direction:column;flex:none}
@@ -996,6 +997,9 @@
       h('button', { class: 'btn', disabled: !unmarked || null, onclick: () => bulk(free, true) }, 'Marcar todas (' + unmarked + ')'),
       h('button', { class: 'btn ghost', disabled: !marked || null, onclick: () => bulk(free, false) }, 'Desmarcar (' + marked + ')'),
       h('button', { class: 'btn vaultbtn', html: ICON.shield, disabled: !outVault || null, onclick: () => vaultAdd(free) }, 'Guardar no cofre (' + outVault + ')'),
+      list.length > free.length
+        ? h('button', { class: 'btn ghost', onclick: () => { vaultRemove(list.filter(inVault)); renderGrid(); } }, 'Tirar do cofre (' + (list.length - free.length) + ')')
+        : null,
       state.checking
         ? h('button', { class: 'btn ghost', onclick: () => (state.checking.stop = true) }, 'Parar conferência (' + state.checking.done + '/' + state.checking.total + ')')
         : h('button', { class: 'btn ghost', disabled: !unchecked || !!state.run || null, title: 'Pergunta ao Instagram se cada conta é comercial. Uma consulta a cada poucos segundos.', onclick: () => checkKinds(list) }, 'Conferir tipo (' + unchecked + ')')
@@ -1756,11 +1760,42 @@
     const file = h('input', { id: 'iguf-vault-file', type: 'file', accept: '.json,.txt,application/json,text/plain', hidden: true });
     const people = state.users.filter((u) => !isDone(u) && !inVault(u) && classify(u).kind === 'pessoa');
 
+    const bulkBox = h('div', { class: 'row' });
+    let armed = null; // esvaziar pede um segundo clique para confirmar
+    function paintBulk(items, q) {
+      bulkBox.textContent = '';
+      if (!state.vault.size) return;
+      if (q && items.length) {
+        bulkBox.appendChild(
+          h('button', { class: 'btn', onclick: () => { vaultRemove(items); paint(); } },
+            'Tirar ' + (items.length === 1 ? 'esta conta' : 'estas ' + items.length + ' contas') + ' do cofre')
+        );
+      }
+      bulkBox.appendChild(
+        h('button', {
+          class: 'btn ghost dangerish',
+          onclick: () => {
+            if (armed) {
+              clearTimeout(armed);
+              armed = null;
+              vaultRemove([...state.vault.values()]);
+              paint();
+              return;
+            }
+            armed = setTimeout(() => { armed = null; paint(); }, 6000);
+            paint();
+          },
+        }, armed ? 'Clique de novo para tirar todas as ' + state.vault.size : 'Esvaziar cofre')
+      );
+      if (armed) bulkBox.appendChild(h('span', { class: 'bulk' }, 'Elas voltam a poder ser removidas. Baixe uma cópia antes, se quiser guardar a lista.'));
+    }
+
     function paint() {
       const q = norm(search.value.trim().replace(/^@/, ''));
       const items = [...state.vault.values()]
         .filter((v) => !q || norm(v.username).includes(q) || norm(v.full_name).includes(q))
         .sort((a, b) => a.username.localeCompare(b.username));
+      paintBulk(items, q);
       info.textContent = state.vault.size
         ? state.vault.size + (state.vault.size === 1 ? ' conta protegida.' : ' contas protegidas.') + ' Elas nunca entram na fila de remoção, mesmo se você marcar todas.'
         : 'O cofre está vazio. Guarde aqui quem você não quer perder: clique no escudo de um cartão, use "Guardar no cofre" num filtro, ou o botão abaixo.';
@@ -1801,6 +1836,7 @@
               'Guardar todas as ' + people.length + ' contas que parecem pessoas')
           : null,
         search,
+        bulkBox,
         listBox,
         h('div', { class: 'note' }, 'O cofre fica salvo neste navegador. Baixe uma cópia para não perder se limpar os dados do navegador ou trocar de computador.'),
         h('div', { class: 'foot' },
