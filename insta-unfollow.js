@@ -219,6 +219,77 @@
       return body;
     }
 
+    const UNFOLLOW_DOC_ID = '27789106940691111';
+    const UNFOLLOW_FRIENDLY_NAME = 'usePolarisUnfollowMutation';
+    let tokenCache = null;
+
+    // fb_dtsg e lsd: chaves que a própria página do Instagram usa nos pedidos GraphQL
+    async function webTokens() {
+      if (tokenCache) return tokenCache;
+      let fbDtsg = null;
+      let lsd = null;
+      let revision = null;
+      try {
+        const req = window.require;
+        if (typeof req === 'function') {
+          fbDtsg = (req('DTSGInitialData') || {}).token || null;
+          lsd = (req('LSD') || {}).token || null;
+          revision = (req('SiteData') || {}).client_revision || null;
+        }
+      } catch (e) {
+        /* módulo indisponível */
+      }
+      const fromHtml = (html) => {
+        const m1 = html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/) || html.match(/"dtsg":\{"token":"([^"]+)"/);
+        const m2 = html.match(/"LSD",\[\],\{"token":"([^"]+)"/);
+        const m3 = html.match(/"client_revision":(\d+)/);
+        if (!fbDtsg && m1) fbDtsg = m1[1];
+        if (!lsd && m2) lsd = m2[1];
+        if (!revision && m3) revision = m3[1];
+      };
+      if (!fbDtsg || !lsd) fromHtml(document.documentElement.innerHTML);
+      if (!fbDtsg || !lsd) {
+        const res = await fetch('https://www.instagram.com/', { credentials: 'include' });
+        fromHtml(await res.text());
+      }
+      if (!fbDtsg || !lsd) {
+        throw new IgError('Não achei as chaves da sessão na página. Recarregue o instagram.com e cole o script de novo.', 'auth');
+      }
+      tokenCache = { fbDtsg, lsd, revision };
+      return tokenCache;
+    }
+
+    function jazoest(token) {
+      let sum = 0;
+      for (let i = 0; i < token.length; i++) sum += token.charCodeAt(i);
+      return '2' + sum;
+    }
+
+    function findKey(obj, key, depth = 0) {
+      if (!obj || typeof obj !== 'object' || depth > 6) return null;
+      if (obj[key] && typeof obj[key] === 'object') return obj[key];
+      for (const v of Object.values(obj)) {
+        const r = findKey(v, key, depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+
+    // true = ainda segue, false = não segue mais, null = não deu para saber
+    async function stillFollowing(pk, username) {
+      try {
+        const data = await igFetch(
+          'https://www.instagram.com/api/v1/friendships/' + myId + '/following/?count=12&query=' + encodeURIComponent(username || '')
+        );
+        const name = String(username || '').toLowerCase();
+        return (data.users || []).some(
+          (u) => String(u.pk_id || u.id || u.pk) === String(pk) || String(u.username || '').toLowerCase() === name
+        );
+      } catch (e) {
+        return null;
+      }
+    }
+
     return {
       async list(kind, onProgress, shouldStop) {
         const out = [];
@@ -253,7 +324,7 @@
           await sleep(rand(1200, 2800) + (page % 10 === 0 ? rand(5000, 10000) : 0));
         }
         return out.map((u) => ({
-          pk: String(u.pk || u.id),
+          pk: String(u.pk_id || u.id || u.pk), // pk_id vem como texto; pk em número pode perder dígitos
           username: u.username,
           full_name: u.full_name || '',
           is_verified: !!u.is_verified,
@@ -262,16 +333,74 @@
         }));
       },
 
-      async unfollow(pk) {
-        const body = new URLSearchParams({ user_id: pk });
-        const opts = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body };
+      // Desde outubro de 2026 as rotas antigas de unfollow devolvem 404 (ou a página HTML).
+      // Agora fazemos o mesmo pedido GraphQL que o botão "Seguindo > Deixar de seguir" do site faz,
+      // e só contamos como removida depois de confirmar que a conta saiu da sua lista.
+      async unfollow(pk, username) {
+        const t = await webTokens();
+        const params = {
+          av: myId,
+          __d: 'www',
+          __user: '0',
+          __a: '1',
+          __comet_req: '7',
+          fb_dtsg: t.fbDtsg,
+          jazoest: jazoest(t.fbDtsg),
+          lsd: t.lsd,
+          fb_api_caller_class: 'RelayModern',
+          fb_api_req_friendly_name: UNFOLLOW_FRIENDLY_NAME,
+          variables: JSON.stringify({
+            target_user_id: String(pk),
+            container_module: 'profile',
+            nav_chain: 'PolarisProfilePostsTabRoot:profilePage:1:via_cold_start',
+          }),
+          server_timestamps: 'true',
+          doc_id: UNFOLLOW_DOC_ID,
+        };
+        if (t.revision) params.__rev = params.__spin_r = t.revision;
+        const res = await fetch('https://www.instagram.com/api/graphql', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-csrftoken': getCookie('csrftoken') || '',
+            'x-fb-friendly-name': UNFOLLOW_FRIENDLY_NAME,
+            'x-fb-lsd': t.lsd,
+            'x-ig-app-id': '936619743392459',
+            'x-asbd-id': '359341',
+          },
+          body: new URLSearchParams(params).toString(),
+        });
+        const text = await res.text();
+        let data = null;
         try {
-          await igFetch('https://www.instagram.com/api/v1/friendships/destroy/' + pk + '/', opts);
+          data = JSON.parse(text.replace(/^for \(;;\);/, ''));
         } catch (e) {
-          if (e.kind !== 'other') throw e;
-          // rota alternativa usada pela versão web
-          await igFetch('https://www.instagram.com/api/v1/web/friendships/' + pk + '/unfollow/', opts);
+          /* não é JSON */
         }
+        const errText = data ? JSON.stringify(data.errors || data.error || data.message || '') : '';
+        if (res.status === 429 || (data && data.spam) || /rate limit|checkpoint|feedback_required|try again later/i.test(errText)) {
+          throw new IgError('O Instagram bloqueou a ação temporariamente.', 'blocked');
+        }
+        if (res.status === 401 || res.status === 403 || /login_required/.test(errText)) {
+          tokenCache = null;
+          throw new IgError('Sessão expirada ou sem permissão. Recarregue a página e faça login.', 'auth');
+        }
+        if (!res.ok || !data || data.errors || data.error || !data.data) {
+          tokenCache = null;
+          throw new IgError(
+            'o Instagram recusou o pedido, HTTP ' + res.status + (errText ? ': ' + errText.slice(0, 160) : data ? '' : ', resposta não é JSON'),
+            'other'
+          );
+        }
+        const fs = findKey(data.data, 'friendship_status');
+        if (fs && (fs.following === true || fs.outgoing_request === true)) {
+          throw new IgError('o Instagram respondeu, mas a conta continua seguida', 'other');
+        }
+        // confere na sua lista de seguindo
+        const still = await stillFollowing(pk, username);
+        if (still === true) throw new IgError('o Instagram respondeu, mas a conta continua na sua lista', 'other');
+        if (still === null && !(fs && fs.following === false)) throw new IgError('não consegui confirmar a remoção', 'other');
       },
 
       // dados públicos do perfil: diz se é conta comercial (empresa/marca) e a categoria
@@ -601,7 +730,7 @@
   .qhead .count{font:700 40px/1 var(--display);color:var(--cut);font-variant-numeric:tabular-nums}
   .qhead .est{color:var(--muted);font-size:13px}
   .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--warn-soft);color:var(--warn)}
-  .qlist{flex:1;overflow:auto;padding:8px 10px;min-height:80px;display:flex;flex-direction:column;gap:2px}
+  .qlist{flex:1 1 0;overflow:auto;padding:8px 10px;min-height:0;display:flex;flex-direction:column;gap:2px}
   .qitem{display:flex;align-items:center;gap:10px;padding:5px 6px;border-radius:10px}
   .qitem:hover{background:var(--raised)}
   .qitem .av{width:30px;height:30px;font-size:12px}
@@ -623,7 +752,7 @@
   .now .bar{margin-top:4px}
   .now .prog{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 
-  .log{height:150px;overflow:auto;padding:8px 16px;border-top:1px solid var(--line);background:var(--raised);font:12px/1.5 var(--mono);color:var(--muted)}
+  .log{flex:none;height:200px;overflow:auto;padding:8px 16px;border-top:1px solid var(--line);background:var(--raised);font:12px/1.5 var(--mono);color:var(--muted)}
   .log .ok{color:var(--ok)}
   .log .warn{color:var(--warn)}
   .log .err{color:var(--cut)}
@@ -681,7 +810,7 @@
     .body{display:flex;flex-direction:column;flex:none}
     .main{min-height:70vh}
     .gridwrap{max-height:70vh}
-    .queue{min-height:420px}
+    .queue{min-height:420px;order:-1}
   }
   @media (max-width:640px){
     .top,.stats,.body{padding-left:16px;padding-right:16px}
@@ -1156,6 +1285,8 @@
   // ---------- fila ----------
   const qref = {};
   function renderQueue() {
+    // o registro é recolocado no painel a cada atualização; mantém sempre a última linha à vista
+    requestAnimationFrame(() => (el.log.scrollTop = el.log.scrollHeight));
     el.queue.textContent = '';
     const q = queue();
     if (state.run) {
@@ -1455,6 +1586,7 @@
     if (!q.length || state.run) return;
     const c = state.cfg;
     state.stopRequested = false;
+    let fails = 0;
     state.run = { total: Math.min(q.length, Math.max(0, c.dailyLimit - daily().count)), done: 0, current: q[0].pk, phase: 'removing', until: 0, phaseLen: 0 };
     log((c.dryRun ? '[teste] ' : '') + 'Começando: ' + state.run.total + ' nesta rodada.');
     renderStats();
@@ -1479,7 +1611,8 @@
         renderQueue();
         try {
           if (c.dryRun) await sleep(400);
-          else await api.unfollow(u.pk);
+          else await api.unfollow(u.pk, u.username);
+          fails = 0;
         } catch (e) {
           if (e.kind === 'rate' || e.kind === 'blocked') {
             log(e.message + ' Parei por segurança. Espere pelo menos 24 h e diminua o ritmo antes de continuar.', 'err');
@@ -1490,6 +1623,10 @@
             break;
           }
           log('Não consegui remover @' + u.username + ' (' + e.message + '). Pulei.', 'warn');
+          if (++fails >= 3) {
+            log('Três falhas seguidas. Parei para não gastar a fila à toa. Se continuar, me mande este registro.', 'err');
+            break;
+          }
           continue;
         }
         state.done.add(u.pk);

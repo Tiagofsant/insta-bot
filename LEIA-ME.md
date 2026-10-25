@@ -69,6 +69,8 @@ No ritmo normal, 150 contas levam umas 3 horas. Se você tem 1.000 para remover,
 
 ## Problemas comuns
 
+- **"Erro 404" em todos os unfollows**: era a rota antiga, que o Instagram desligou em outubro de 2026. A versão atual usa o mesmo pedido do botão do site. Cole o script novo e clique em **Atualizar lista** antes de remover.
+
 - **"Não encontrei sua sessão"**: você não está logado nessa aba, ou abriu outro site. Entre em instagram.com e tente de novo.
 - **"Sessão expirada"**: recarregue a página, faça login, cole o script de novo.
 - **Lista para no meio**: o Instagram pediu calma. O painel espera e tenta de novo sozinho. Se falhar, espere alguns minutos e clique em "Carregar" outra vez.
